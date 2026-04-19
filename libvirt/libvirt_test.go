@@ -58,7 +58,7 @@ func TestUp_Success(t *testing.T) {
 
 	config := &VMConfig{
 		Name:     "test-vm",
-		Box:      createTempBoxImage(t),
+		Image:    createTempBoxImage(t),
 		CPUs:     2,
 		MemoryMB: 2048,
 	}
@@ -77,7 +77,7 @@ func TestUp_MissingName(t *testing.T) {
 	mgr := NewWithState(sm)
 
 	config := &VMConfig{
-		Box: "/some/image.qcow2",
+		Image: "/some/image.qcow2",
 	}
 
 	_, err := mgr.Up(config)
@@ -85,7 +85,7 @@ func TestUp_MissingName(t *testing.T) {
 	assert.Contains(t, err.Error(), "VM name is required")
 }
 
-func TestUp_MissingBox(t *testing.T) {
+func TestUp_MissingImage(t *testing.T) {
 	origExecCommand := ExecCommand
 	defer func() { ExecCommand = origExecCommand }()
 
@@ -97,12 +97,12 @@ func TestUp_MissingBox(t *testing.T) {
 
 	config := &VMConfig{
 		Name: "test-vm",
-		// No box or box_url
+		// No image or image_url
 	}
 
 	_, err := mgr.Up(config)
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "either box or box_url must be specified")
+	assert.Contains(t, err.Error(), "either image or image_url must be specified")
 }
 
 func TestHalt_Success(t *testing.T) {
@@ -268,7 +268,7 @@ func TestBuildVirtInstallArgs_Default(t *testing.T) {
 		CPUs:        2,
 		MemoryMB:    2048,
 		DiskSizeGB:  20,
-		DiskType:    "qcow2",
+		DiskFormat:    "qcow2",
 		NetworkType: "nat",
 	}
 
@@ -293,7 +293,7 @@ func TestBuildVirtInstallArgs_Bridged(t *testing.T) {
 		CPUs:          1,
 		MemoryMB:      1024,
 		DiskSizeGB:    10,
-		DiskType:      "qcow2",
+		DiskFormat:      "qcow2",
 		NetworkType:   "bridged",
 		NetworkBridge: "virbr1",
 	}
@@ -317,19 +317,39 @@ func TestBuildVirtInstallArgs_GUI(t *testing.T) {
 		CPUs:        1,
 		MemoryMB:    1024,
 		DiskSizeGB:  10,
-		DiskType:    "qcow2",
+		DiskFormat:  "qcow2",
 		NetworkType: "nat",
 		GUI:         true,
 	}
 
 	args := mgr.buildVirtInstallArgs(config, "/path/to/image.qcow2")
 
-	// Should NOT contain --graphics none when GUI is true
-	for i, arg := range args {
-		if arg == "--graphics" && i+1 < len(args) && args[i+1] == "none" {
-			t.Fatal("expected --graphics none to NOT be present when GUI is true")
-		}
+	// Should contain --graphics vnc and --video vga when GUI is true
+	assert.Contains(t, args, "--graphics")
+	assert.Contains(t, args, "vnc,listen=127.0.0.1")
+	assert.Contains(t, args, "--video")
+	assert.Contains(t, args, "vga")
+}
+
+func TestBuildVirtInstallArgs_ISO(t *testing.T) {
+	mgr := &manager{}
+	config := &VMConfig{
+		Name:        "test-vm",
+		CPUs:        2,
+		MemoryMB:    2048,
+		DiskSizeGB:  20,
+		DiskFormat:  "qcow2",
+		NetworkType: "nat",
 	}
+
+	args := mgr.buildVirtInstallArgs(config, "/path/to/rocky.iso")
+
+	assert.Contains(t, args, "--cdrom")
+	assert.Contains(t, args, "/path/to/rocky.iso")
+	assert.Contains(t, args, "--boot")
+	assert.Contains(t, args, "cdrom,hd")
+	// Should NOT contain --import for ISO boot
+	assert.NotContains(t, args, "--import")
 }
 
 // createTempBoxImage creates a temporary file to act as a box image for testing.

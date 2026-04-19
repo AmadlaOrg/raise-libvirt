@@ -237,8 +237,8 @@ type entityInput struct {
 type entityBody struct {
 	Provider       string             `json:"provider" yaml:"provider"`
 	Region         string             `json:"region" yaml:"region"`
-	Box            string             `json:"box" yaml:"box"`
-	BoxURL         string             `json:"box_url" yaml:"box_url"`
+	Image          string             `json:"image" yaml:"image"`
+	ImageURL       string             `json:"image_url" yaml:"image_url"`
 	CPUs           int                `json:"cpus" yaml:"cpus"`
 	Memory         int                `json:"memory" yaml:"memory"`
 	Disk           *entityDisk        `json:"disk" yaml:"disk"`
@@ -250,8 +250,8 @@ type entityBody struct {
 }
 
 type entityDisk struct {
-	Size int    `json:"size" yaml:"size"`
-	Type string `json:"type" yaml:"type"`
+	Size   int    `json:"size" yaml:"size"`
+	Format string `json:"format" yaml:"format"`
 }
 
 type entityNetwork struct {
@@ -326,8 +326,8 @@ func parseEntityToConfig(data []byte) (*libvirt.VMConfig, error) {
 
 	body := entity.Body
 	config := &libvirt.VMConfig{
-		Box:            body.Box,
-		BoxURL:         body.BoxURL,
+		Image:          body.Image,
+		ImageURL:       body.ImageURL,
 		CPUs:           body.CPUs,
 		MemoryMB:       body.Memory,
 		GUI:            body.GUI,
@@ -337,7 +337,7 @@ func parseEntityToConfig(data []byte) (*libvirt.VMConfig, error) {
 
 	if body.Disk != nil {
 		config.DiskSizeGB = body.Disk.Size
-		config.DiskType = body.Disk.Type
+		config.DiskFormat = body.Disk.Format
 	}
 
 	if body.Network != nil {

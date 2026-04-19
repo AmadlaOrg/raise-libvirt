@@ -16,6 +16,9 @@ import (
 // ExecCommand is a variable for exec.Command to allow mocking in tests.
 var ExecCommand = exec.Command
 
+// libvirtURI is the connection URI for libvirt (system vs session).
+const libvirtURI = "qemu:///system"
+
 
 // HttpGet is a variable for http.Get to allow mocking in tests.
 var HttpGet = http.Get
@@ -29,12 +32,12 @@ var IoCopy = io.Copy
 // VMConfig holds the configuration for a virtual machine.
 type VMConfig struct {
 	Name           string         `json:"name" yaml:"name"`
-	Box            string         `json:"box" yaml:"box"`
-	BoxURL         string         `json:"box_url" yaml:"box_url"`
+	Image          string         `json:"image" yaml:"image"`
+	ImageURL       string         `json:"image_url" yaml:"image_url"`
 	CPUs           int            `json:"cpus" yaml:"cpus"`
 	MemoryMB       int            `json:"memory" yaml:"memory"`
 	DiskSizeGB     int            `json:"disk_size" yaml:"disk_size"`
-	DiskType       string         `json:"disk_type" yaml:"disk_type"`
+	DiskFormat     string         `json:"disk_format" yaml:"disk_format"`
 	NetworkType    string         `json:"network_type" yaml:"network_type"`
 	NetworkBridge  string         `json:"network_bridge" yaml:"network_bridge"`
 	NetworkIP      string         `json:"network_ip" yaml:"network_ip"`
@@ -114,8 +117,8 @@ func (m *manager) Up(config *VMConfig) (*VMState, error) {
 	if config.DiskSizeGB <= 0 {
 		config.DiskSizeGB = 10
 	}
-	if config.DiskType == "" {
-		config.DiskType = "qcow2"
+	if config.DiskFormat == "" {
+		config.DiskFormat = "qcow2"
 	}
 	if config.NetworkType == "" {
 		config.NetworkType = "nat"
@@ -127,10 +130,10 @@ func (m *manager) Up(config *VMConfig) (*VMState, error) {
 		config.SSHPort = 22
 	}
 
-	// Resolve box image
-	imagePath, err := m.resolveBoxImage(config)
+	// Resolve image
+	imagePath, err := m.resolveImage(config)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve box image: %w", err)
+		return nil, fmt.Errorf("failed to resolve image: %w", err)
 	}
 
 	// Build virt-install arguments
@@ -165,7 +168,7 @@ func (m *manager) Up(config *VMConfig) (*VMState, error) {
 
 // Halt shuts down a VM gracefully.
 func (m *manager) Halt(name string) error {
-	cmd := ExecCommand("virsh", "shutdown", name)
+	cmd := ExecCommand("virsh", "--connect", libvirtURI, "shutdown", name)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("virsh shutdown failed: %s: %w", string(output), err)
@@ -181,11 +184,11 @@ func (m *manager) Halt(name string) error {
 // Destroy removes a VM and its storage.
 func (m *manager) Destroy(name string) error {
 	// Try to destroy (force stop) the VM - ignore errors if it's already stopped
-	cmd := ExecCommand("virsh", "destroy", name)
+	cmd := ExecCommand("virsh", "--connect", libvirtURI, "destroy", name)
 	_ = cmd.Run()
 
 	// Undefine the VM and remove storage
-	cmd = ExecCommand("virsh", "undefine", name, "--remove-all-storage")
+	cmd = ExecCommand("virsh", "--connect", libvirtURI, "undefine", name, "--remove-all-storage")
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("virsh undefine failed: %s: %w", string(output), err)
@@ -218,7 +221,7 @@ func (m *manager) SSH(name string, user string, port int, keyFile string) error 
 
 	sshArgs := []string{
 		"-o", "StrictHostKeyChecking=no",
-		"-o", "UserKnownHostsFile=/dev/null",
+		"-o", "UserKnownHostsFile=" + os.DevNull,
 		"-p", fmt.Sprintf("%d", port),
 	}
 
@@ -237,7 +240,7 @@ func (m *manager) SSH(name string, user string, port int, keyFile string) error 
 
 // Status returns the current state of a specific VM.
 func (m *manager) Status(name string) (*VMState, error) {
-	cmd := ExecCommand("virsh", "domstate", name)
+	cmd := ExecCommand("virsh", "--connect", libvirtURI, "domstate", name)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("virsh domstate failed for %q: %w", name, err)
@@ -296,26 +299,45 @@ func (m *manager) StatusAll() ([]VMState, error) {
 	return states, nil
 }
 
-// resolveBoxImage finds or downloads the box image and returns its path.
-func (m *manager) resolveBoxImage(config *VMConfig) (string, error) {
-	if config.Box == "" && config.BoxURL == "" {
-		return "", fmt.Errorf("either box or box_url must be specified")
+// isISO returns true if the path has an ISO file extension.
+func isISO(path string) bool {
+	ext := strings.ToLower(filepath.Ext(path))
+	return ext == ".iso"
+}
+
+// resolveImage finds or downloads the image and returns its path.
+func (m *manager) resolveImage(config *VMConfig) (string, error) {
+	if config.Image == "" && config.ImageURL == "" {
+		return "", fmt.Errorf("either image or image_url must be specified")
+	}
+
+	// Expand ~ in image path
+	image := config.Image
+	if strings.HasPrefix(image, "~/") {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			image = filepath.Join(home, image[2:])
+		}
+	}
+
+	// If image is an absolute path to an existing file, use it directly
+	if image != "" && filepath.IsAbs(image) {
+		if _, err := os.Stat(image); err == nil {
+			return image, nil
+		}
 	}
 
 	boxDir := boxesDir()
 	if err := os.MkdirAll(boxDir, 0o755); err != nil {
-		return "", fmt.Errorf("failed to create boxes directory: %w", err)
+		return "", fmt.Errorf("failed to create images directory: %w", err)
 	}
 
-	// If box is an absolute path to an existing file, use it directly
-	if config.Box != "" && filepath.IsAbs(config.Box) {
-		if _, err := os.Stat(config.Box); err == nil {
-			return config.Box, nil
-		}
+	// Normalize image name for filesystem (e.g., "debian/bookworm64" -> "debian-bookworm64")
+	ext := ".qcow2"
+	if isISO(image) {
+		ext = ".iso"
 	}
-
-	// Normalize box name for filesystem (e.g., "debian/bookworm64" -> "debian-bookworm64")
-	boxFileName := strings.ReplaceAll(config.Box, "/", "-") + ".qcow2"
+	boxFileName := strings.ReplaceAll(image, "/", "-") + ext
 	boxPath := filepath.Join(boxDir, boxFileName)
 
 	// Check if already downloaded
@@ -324,15 +346,15 @@ func (m *manager) resolveBoxImage(config *VMConfig) (string, error) {
 	}
 
 	// Download if URL provided
-	if config.BoxURL != "" {
-		fmt.Fprintf(os.Stderr, "Downloading box image from %s...\n", config.BoxURL)
-		if err := m.downloadImage(config.BoxURL, boxPath); err != nil {
-			return "", fmt.Errorf("failed to download box image: %w", err)
+	if config.ImageURL != "" {
+		fmt.Fprintf(os.Stderr, "Downloading image from %s...\n", config.ImageURL)
+		if err := m.downloadImage(config.ImageURL, boxPath); err != nil {
+			return "", fmt.Errorf("failed to download image: %w", err)
 		}
 		return boxPath, nil
 	}
 
-	return "", fmt.Errorf("box image %q not found and no box_url provided", config.Box)
+	return "", fmt.Errorf("image %q not found and no image_url provided", config.Image)
 }
 
 // downloadImage downloads a file from a URL.
@@ -365,13 +387,27 @@ func (m *manager) downloadImage(url, destPath string) error {
 // buildVirtInstallArgs constructs the virt-install command arguments.
 func (m *manager) buildVirtInstallArgs(config *VMConfig, imagePath string) []string {
 	args := []string{
+		"--connect", libvirtURI,
 		"--name", config.Name,
 		"--vcpus", fmt.Sprintf("%d", config.CPUs),
 		"--memory", fmt.Sprintf("%d", config.MemoryMB),
-		"--import",
-		"--disk", fmt.Sprintf("path=%s,size=%d,format=%s", imagePath, config.DiskSizeGB, config.DiskType),
 		"--os-variant", "generic",
 		"--noautoconsole",
+	}
+
+	if isISO(imagePath) {
+		// ISO boot: use --cdrom for the ISO and create an empty disk for installation
+		args = append(args,
+			"--cdrom", imagePath,
+			"--disk", fmt.Sprintf("size=%d,format=%s", config.DiskSizeGB, config.DiskFormat),
+			"--boot", "cdrom,hd",
+		)
+	} else {
+		// Pre-built image: import directly
+		args = append(args,
+			"--import",
+			"--disk", fmt.Sprintf("path=%s,size=%d,format=%s", imagePath, config.DiskSizeGB, config.DiskFormat),
+		)
 	}
 
 	// Network configuration
@@ -388,8 +424,10 @@ func (m *manager) buildVirtInstallArgs(config *VMConfig, imagePath string) []str
 		args = append(args, "--network", "network=default,model=virtio")
 	}
 
-	// Headless by default
-	if !config.GUI {
+	// Graphics configuration
+	if config.GUI {
+		args = append(args, "--graphics", "vnc,listen=127.0.0.1", "--video", "vga")
+	} else {
 		args = append(args, "--graphics", "none")
 	}
 
@@ -398,7 +436,7 @@ func (m *manager) buildVirtInstallArgs(config *VMConfig, imagePath string) []str
 
 // getVMIP retrieves the IP address of a VM using virsh domifaddr.
 func (m *manager) getVMIP(name string) (string, error) {
-	cmd := ExecCommand("virsh", "domifaddr", name)
+	cmd := ExecCommand("virsh", "--connect", libvirtURI, "domifaddr", name)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", err
@@ -425,7 +463,7 @@ func parseIPFromDomifaddr(output string) string {
 
 // parseVirshList parses the output of virsh list --all into a map of name -> state.
 func (m *manager) parseVirshList() (map[string]string, error) {
-	cmd := ExecCommand("virsh", "list", "--all")
+	cmd := ExecCommand("virsh", "--connect", libvirtURI, "list", "--all")
 	output, err := cmd.Output()
 	if err != nil {
 		return nil, err
