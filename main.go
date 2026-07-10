@@ -226,46 +226,6 @@ func writeHeryOutput(w io.Writer, format string, data map[string]any) error {
 	}
 }
 
-// entityInput represents the infrastructure entity format.
-type entityInput struct {
-	Type   string      `json:"_type" yaml:"_type"`
-	Extends string      `json:"_extends" yaml:"_extends"`
-	Meta   any         `json:"_meta" yaml:"_meta"`
-	Body   *entityBody `json:"_body" yaml:"_body"`
-}
-
-type entityBody struct {
-	Provider       string             `json:"provider" yaml:"provider"`
-	Region         string             `json:"region" yaml:"region"`
-	Image          string             `json:"image" yaml:"image"`
-	ImageURL       string             `json:"image_url" yaml:"image_url"`
-	CPUs           int                `json:"cpus" yaml:"cpus"`
-	Memory         int                `json:"memory" yaml:"memory"`
-	Disk           *entityDisk        `json:"disk" yaml:"disk"`
-	Network        *entityNetwork     `json:"network" yaml:"network"`
-	ForwardedPorts []libvirt.PortForward  `json:"forwarded_ports" yaml:"forwarded_ports"`
-	SyncedFolders  []libvirt.SyncedFolder `json:"synced_folders" yaml:"synced_folders"`
-	GUI            bool               `json:"gui" yaml:"gui"`
-	SSH            *entitySSH         `json:"ssh" yaml:"ssh"`
-}
-
-type entityDisk struct {
-	Size   int    `json:"size" yaml:"size"`
-	Format string `json:"format" yaml:"format"`
-}
-
-type entityNetwork struct {
-	Type   string `json:"type" yaml:"type"`
-	Bridge string `json:"bridge" yaml:"bridge"`
-	IP     string `json:"ip" yaml:"ip"`
-}
-
-type entitySSH struct {
-	User       string `json:"user" yaml:"user"`
-	Port       int    `json:"port" yaml:"port"`
-	PrivateKey string `json:"private_key" yaml:"private_key"`
-}
-
 func runUp(cmd *cobra.Command, args []string) error {
 	var input io.Reader
 
@@ -306,53 +266,6 @@ func runUp(cmd *cobra.Command, args []string) error {
 	}
 
 	return libvirt.OutputJSON(state)
-}
-
-// parseEntityToConfig parses infrastructure entity input (JSON or YAML) into a VMConfig.
-func parseEntityToConfig(data []byte) (*libvirt.VMConfig, error) {
-	var entity entityInput
-
-	// Try JSON first
-	if err := json.Unmarshal(data, &entity); err != nil {
-		// Fall back to YAML
-		if err := yaml.Unmarshal(data, &entity); err != nil {
-			return nil, fmt.Errorf("input is neither valid JSON nor YAML: %w", err)
-		}
-	}
-
-	if entity.Body == nil {
-		return nil, fmt.Errorf("input missing _body field")
-	}
-
-	body := entity.Body
-	config := &libvirt.VMConfig{
-		Image:          body.Image,
-		ImageURL:       body.ImageURL,
-		CPUs:           body.CPUs,
-		MemoryMB:       body.Memory,
-		GUI:            body.GUI,
-		ForwardedPorts: body.ForwardedPorts,
-		SyncedFolders:  body.SyncedFolders,
-	}
-
-	if body.Disk != nil {
-		config.DiskSizeGB = body.Disk.Size
-		config.DiskFormat = body.Disk.Format
-	}
-
-	if body.Network != nil {
-		config.NetworkType = body.Network.Type
-		config.NetworkBridge = body.Network.Bridge
-		config.NetworkIP = body.Network.IP
-	}
-
-	if body.SSH != nil {
-		config.SSHUser = body.SSH.User
-		config.SSHPort = body.SSH.Port
-		config.SSHPrivateKey = body.SSH.PrivateKey
-	}
-
-	return config, nil
 }
 
 func main() {
